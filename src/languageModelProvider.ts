@@ -2,12 +2,21 @@ import * as vscode from 'vscode';
 import * as https from 'https';
 import * as http from 'http';
 import { URL } from 'url';
-import { ModelEntry, ModelSelectorProvider } from './modelSelector';
+import { ModelEntry, ModelSelectorProvider, getModelName, getModelVendor, getModelKey } from './modelSelector';
 
 interface OpenAIResponse {
     choices: Array<{
-        message: {
+        message?: {
             content: string | null;
+            reasoning_content?: string | null;
+            tool_calls?: Array<{
+                id: string;
+                type: 'function';
+                function: { name: string; arguments: string };
+            }> | null;
+        };
+        delta?: {
+            content?: string | null;
             reasoning_content?: string | null;
             tool_calls?: Array<{
                 id: string;
@@ -46,30 +55,36 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         this._onDidChange.fire();
     }
 
+    dispose(): void {
+        this._onDidChange.dispose();
+    }
+
     async provideLanguageModelChatInformation(
         _options: vscode.PrepareLanguageModelChatModelOptions,
         _token: vscode.CancellationToken
     ): Promise<vscode.LanguageModelChatInformation[]> {
         const models = this.selectorProvider.getModels();
-        const selectedId = this.selectorProvider.getSelectedModelId();
+        const selectedKey = this.selectorProvider.getSelectedModelId();
 
         // Sort: selected model first
         const sorted = [...models].sort((a, b) => {
-            if (a.id === selectedId) return -1;
-            if (b.id === selectedId) return 1;
+            if (getModelKey(a) === selectedKey) return -1;
+            if (getModelKey(b) === selectedKey) return 1;
             return 0;
         });
 
         return sorted.map(m => ({
-            id: m.id,
-            name: m.name,
+            id: getModelKey(m),
+            name: getModelName(m),
             family: m.id,
             version: '1.0.0',
+            tooltip: `${getModelName(m)} · ${m.baseUrl || 'default endpoint'}`,
+            detail: 'AI Model Selector',
             maxInputTokens: m.maxInputTokens,
             maxOutputTokens: m.maxOutputTokens,
             capabilities: {
-                imageInput: true,
-                toolCalling: true,
+                imageInput: m.imageInput ?? true,
+                toolCalling: m.toolCalling ?? true,
             },
         }));
     }
@@ -81,14 +96,14 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         progress: vscode.Progress<vscode.LanguageModelResponsePart>,
         token: vscode.CancellationToken
     ): Promise<void> {
-        const m = this.selectorProvider.findModelById(model.id);
+        const m = this.selectorProvider.findModelByKey(model.id);
         if (!m) {
             throw new Error(`Model "${model.id}" not found in configuration`);
         }
 
         if (!m.apiKey) {
             throw new Error(
-                `No API key configured for "${m.name}". ` +
+                `No API key configured for "${getModelName(m)}". ` +
                 `Run "ai-model: Config" to set it.`
             );
         }
@@ -151,12 +166,13 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         const body = JSON.stringify({
             model: m.id,
             messages,
-            stream: false,
+            stream: true,
         });
 
         const endpoint = (m.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '') + '/chat/completions';
         const url = new URL(endpoint);
-        const response = await this.httpRequest({
+
+        const responseStream = await this.httpStreamRequest({
             hostname: url.hostname,
             port: url.port || (url.protocol === 'https:' ? 443 : 80),
             path: url.pathname + url.search,
@@ -167,23 +183,38 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
             },
         }, body, token);
 
-        const data = JSON.parse(response) as OpenAIResponse;
-        if (data.choices && data.choices.length > 0) {
-            const msg = data.choices[0].message;
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-            // Report tool calls if present
-            if (msg.tool_calls && msg.tool_calls.length > 0) {
-                for (const tc of msg.tool_calls) {
-                    let args: Record<string, unknown> = {};
-                    try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
-                    progress.report(new vscode.LanguageModelToolCallPart(tc.id, tc.function.name, args));
-                }
-            }
+        for await (const sseChunk of responseStream) {
+            buffer += decoder.decode(sseChunk, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop()!; // keep incomplete line in buffer
 
-            // Report text content (prefer content, fall back to reasoning_content)
-            const text = msg.content || msg.reasoning_content || '';
-            if (text) {
-                progress.report(new vscode.LanguageModelTextPart(text));
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.startsWith('data: ')) continue;
+                const data = trimmed.slice(6);
+                if (data === '[DONE]') return;
+
+                try {
+                    const parsed = JSON.parse(data) as OpenAIResponse;
+                    const chunk = parsed.choices?.[0]?.delta;
+                    if (!chunk) continue;
+
+                    if (chunk.tool_calls) {
+                        for (const tc of chunk.tool_calls) {
+                            let args: Record<string, unknown> = {};
+                            try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+                            progress.report(new vscode.LanguageModelToolCallPart(tc.id, tc.function.name, args));
+                        }
+                    }
+
+                    const text = chunk.content || chunk.reasoning_content || '';
+                    if (text) {
+                        progress.report(new vscode.LanguageModelTextPart(text));
+                    }
+                } catch { /* skip malformed SSE line */ }
             }
         }
     }
@@ -282,10 +313,48 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         }
     }
 
+    private httpStreamRequest(
+        options: https.RequestOptions,
+        body: string,
+        token: vscode.CancellationToken,
+        timeoutMs: number = 120000
+    ): Promise<AsyncIterable<Buffer>> {
+        return new Promise((resolve, reject) => {
+            const transport = options.port === 80 || options.port === '80' ? http : https;
+            const req = transport.request(options, (res) => {
+                if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                    resolve(res as unknown as AsyncIterable<Buffer>);
+                } else {
+                    let errData = '';
+                    res.on('data', (chunk) => { errData += chunk; });
+                    res.on('end', () => {
+                        reject(new Error(`API request failed (${res.statusCode}): ${errData}`));
+                    });
+                }
+            });
+
+            req.setTimeout(timeoutMs, () => {
+                req.destroy();
+                reject(new Error(`Request timed out after ${timeoutMs}ms`));
+            });
+
+            req.on('error', reject);
+
+            token.onCancellationRequested(() => {
+                req.destroy();
+                reject(new Error('Request cancelled'));
+            });
+
+            req.write(body);
+            req.end();
+        });
+    }
+
     private httpRequest(
         options: https.RequestOptions,
         body: string,
-        token: vscode.CancellationToken
+        token: vscode.CancellationToken,
+        timeoutMs: number = 60000
     ): Promise<string> {
         return new Promise((resolve, reject) => {
             const transport = options.port === 80 || options.port === '80' ? http : https;
@@ -299,6 +368,11 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
                         reject(new Error(`API request failed (${res.statusCode}): ${data}`));
                     }
                 });
+            });
+
+            req.setTimeout(timeoutMs, () => {
+                req.destroy();
+                reject(new Error(`Request timed out after ${timeoutMs}ms`));
             });
 
             req.on('error', reject);

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ModelSelectorProvider } from './modelSelector';
 import { ModelSelectorLanguageModelProvider } from './languageModelProvider';
 
@@ -15,17 +16,33 @@ export function activate(context: vscode.ExtensionContext) {
         languageModelProvider
     );
     context.subscriptions.push(lmDisposable);
+    context.subscriptions.push({ dispose: () => modelSelector.dispose() });
+    context.subscriptions.push({ dispose: () => languageModelProvider.dispose() });
+
+    // Also react to internal config changes (e.g. saveSelectedModel, saveModels)
+    context.subscriptions.push(
+        modelSelector.onDidChangeConfig(() => languageModelProvider.fireChange())
+    );
 
     // Watch config file for changes
     const configUri = modelSelector.getConfigFileUri();
     if (configUri) {
-        const watcher = vscode.workspace.createFileSystemWatcher(configUri.fsPath);
-        watcher.onDidChange(() => {
+        const watcher = vscode.workspace.createFileSystemWatcher(
+            new vscode.RelativePattern(
+                vscode.Uri.joinPath(configUri, '..'),
+                path.basename(configUri.fsPath)
+            )
+        );
+        const onConfigFileChange = () => {
+            modelSelector.invalidateCache();
             languageModelProvider.fireChange();
+        };
+        watcher.onDidChange(() => {
+            onConfigFileChange();
             vscode.window.showInformationMessage('Model config reloaded. Select the model in VS Code Chat.');
         });
         watcher.onDidCreate(() => {
-            languageModelProvider.fireChange();
+            onConfigFileChange();
             vscode.window.showInformationMessage('Model config created. Select the model in VS Code Chat.');
         });
         context.subscriptions.push(watcher);
@@ -48,6 +65,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
     context.subscriptions.push(configCmd);
+
+    // Select model command
+    const selectCmd = vscode.commands.registerCommand(
+        'modelSelector.selectModel',
+        () => modelSelector.selectModel()
+    );
+    context.subscriptions.push(selectCmd);
 }
 
 export function deactivate() {}

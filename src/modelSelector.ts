@@ -4,19 +4,52 @@ import * as path from 'path';
 
 export interface ModelEntry {
     id: string;
-    name: string;
-    vendor: string;
+    name?: string;
+    vendor?: string;
     apiKey: string;
     baseUrl: string;
     maxInputTokens: number;
     maxOutputTokens: number;
+    imageInput?: boolean;
+    toolCalling?: boolean;
 }
+
+function deriveNameFromId(id: string): string {
+    return id
+        .replace(/[-_]/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function deriveVendorFromId(id: string): string {
+    const prefix = id.split(/[-_]/)[0];
+    return prefix.toLowerCase();
+}
+
+export function getModelName(m: ModelEntry): string {
+    return m.name || deriveNameFromId(m.id);
+}
+
+export function getModelVendor(m: ModelEntry): string {
+    return m.vendor || deriveVendorFromId(m.id);
+}
+
+/**
+ * Generate a unique key for a model entry.
+ * If name is explicitly set, use name (since user chose it to distinguish).
+ * Otherwise use id + baseUrl to handle same model from different sources.
+ */
+export function getModelKey(m: ModelEntry): string {
+    if (m.name) { return m.name; }
+    const base = (m.baseUrl || '').replace(/\/+$/, '');
+    return base ? `${m.id}@${base}` : m.id;
+}
+
+const DEFAULT_MODEL_ID = "deepseek-v4-pro";
 
 const DEFAULT_MODELS: ModelEntry[] = [
     {
-        id: "deepseek-chat",
-        name: "DeepSeek Chat",
-        vendor: "deepseek",
+        id: DEFAULT_MODEL_ID,
+        name: "DeepSeek V4 Pro",
         apiKey: "",
         baseUrl: "https://api.deepseek.com/v1",
         maxInputTokens: 128000,
@@ -27,11 +60,21 @@ const DEFAULT_MODELS: ModelEntry[] = [
 export class ModelSelectorProvider {
     private context: vscode.ExtensionContext;
     private _cachedConfigFilePath: string | undefined;
+    private _cachedModels: ModelEntry[] | undefined;
+    private _selectedModelKey: string = DEFAULT_MODEL_ID;
     private _onDidChangeConfig = new vscode.EventEmitter<void>();
     readonly onDidChangeConfig = this._onDidChangeConfig.event;
 
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
+    }
+
+    dispose(): void {
+        this._onDidChangeConfig.dispose();
+    }
+
+    invalidateCache(): void {
+        this._cachedModels = undefined;
     }
 
     private getConfigFilePath(): string | undefined {
@@ -66,34 +109,32 @@ export class ModelSelectorProvider {
 
         if (!fs.existsSync(configPath)) {
             const defaultContent = JSON.stringify({
-                selectedModel: "deepseek-chat",
                 models: DEFAULT_MODELS
             }, null, 2);
             fs.writeFileSync(configPath, defaultContent, 'utf-8');
         }
     }
 
-    private readConfigFromFile(): { selectedModel: string; models: ModelEntry[] } {
+    private readModelsFromFile(): ModelEntry[] {
+        if (this._cachedModels) {
+            return this._cachedModels;
+        }
+
         const configPath = this.getConfigFilePath();
         if (!configPath || !fs.existsSync(configPath)) {
-            return { selectedModel: "deepseek-chat", models: DEFAULT_MODELS };
+            return DEFAULT_MODELS;
         }
 
         try {
             const content = fs.readFileSync(configPath, 'utf-8');
             const config = JSON.parse(content);
+            let models: ModelEntry[];
 
-            // Support both old format (endpoints) and new format (models)
             if (Array.isArray(config.models)) {
-                return {
-                    selectedModel: config.selectedModel || "deepseek-chat",
-                    models: config.models
-                };
-            }
-
-            // Convert old endpoints format to new models format
-            if (Array.isArray(config.endpoints)) {
-                const models: ModelEntry[] = [];
+                models = config.models;
+            } else if (Array.isArray(config.endpoints)) {
+                // Convert old endpoints format to new models format
+                models = [];
                 for (const ep of config.endpoints) {
                     for (const m of ep.models) {
                         models.push({
@@ -107,60 +148,61 @@ export class ModelSelectorProvider {
                         });
                     }
                 }
-                return { selectedModel: config.selectedModel || "deepseek-chat", models };
+            } else {
+                models = DEFAULT_MODELS;
             }
 
-            return { selectedModel: "deepseek-chat", models: DEFAULT_MODELS };
+            this._cachedModels = models;
+            return models;
         } catch (e) {
             console.error('Failed to read model config:', e);
-            return { selectedModel: "deepseek-chat", models: DEFAULT_MODELS };
+            return DEFAULT_MODELS;
         }
     }
 
-    private writeConfigToFile(config: { selectedModel?: string; models?: ModelEntry[] }): void {
+    private writeModelsToFile(models: ModelEntry[]): void {
         const configPath = this.getConfigFilePath();
         if (!configPath) return;
 
-        const current = this.readConfigFromFile();
-        const merged = { ...current, ...config };
-        fs.writeFileSync(configPath, JSON.stringify(merged, null, 2), 'utf-8');
+        fs.writeFileSync(configPath, JSON.stringify({ models }, null, 2), 'utf-8');
+        this._cachedModels = models;
         this._onDidChangeConfig.fire();
     }
 
     getModels(): ModelEntry[] {
-        return this.readConfigFromFile().models;
+        return this.readModelsFromFile();
     }
 
     getSelectedModelId(): string {
-        return this.readConfigFromFile().selectedModel;
+        return this._selectedModelKey;
     }
 
-    async saveSelectedModel(modelId: string): Promise<void> {
-        this.writeConfigToFile({ selectedModel: modelId });
+    async saveSelectedModel(modelKey: string): Promise<void> {
+        this._selectedModelKey = modelKey;
     }
 
     async saveModels(models: ModelEntry[]): Promise<void> {
-        this.writeConfigToFile({ models });
+        this.writeModelsToFile(models);
     }
 
-    findModelById(modelId: string): ModelEntry | undefined {
-        return this.getModels().find(m => m.id === modelId);
+    findModelByKey(key: string): ModelEntry | undefined {
+        return this.getModels().find(m => getModelKey(m) === key);
     }
 
     async selectModel(): Promise<void> {
         const models = this.getModels();
-        const selectedId = this.getSelectedModelId();
+        const selectedKey = this.getSelectedModelId();
 
         if (models.length === 0) {
             vscode.window.showWarningMessage('No models configured. Run "ai-model: Config" to add models.');
             return;
         }
 
-        const items: (vscode.QuickPickItem & { modelId: string })[] = models.map(m => ({
-            label: m.name,
-            description: `${m.vendor}${m.id === selectedId ? '  $(check)' : ''}`,
-            detail: m.id,
-            modelId: m.id,
+        const items: (vscode.QuickPickItem & { modelKey: string })[] = models.map(m => ({
+            label: getModelName(m),
+            description: `${getModelVendor(m)}${getModelKey(m) === selectedKey ? '  $(check)' : ''}`,
+            detail: m.baseUrl || '',
+            modelKey: getModelKey(m),
         }));
 
         const selected = await vscode.window.showQuickPick(items, {
@@ -171,7 +213,7 @@ export class ModelSelectorProvider {
         });
 
         if (selected) {
-            await this.saveSelectedModel(selected.modelId);
+            await this.saveSelectedModel(selected.modelKey);
             vscode.window.showInformationMessage(`Selected model: ${selected.label}`);
         }
     }
