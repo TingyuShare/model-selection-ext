@@ -109,11 +109,51 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         }
 
         const chatMessages = this.extractPrompt(messages);
+
+        // Prevent infinite tool call loops
+        const MAX_TOOL_ROUNDS = 5;
+        const toolCallCount = messages.filter(m =>
+            m.content.some(p => p instanceof vscode.LanguageModelToolCallPart)
+        ).length;
+        if (toolCallCount >= MAX_TOOL_ROUNDS) {
+            console.log(`[ModelSelector] Max tool rounds (${MAX_TOOL_ROUNDS}) reached, stopping tool loop`);
+            return;
+        }
         if (chatMessages.length === 0) {
             chatMessages.push({ role: 'user', content: 'Hello' });
         }
 
-        await this.callChatCompletions(m, chatMessages, progress, token);
+        // Merge tools from options (passed by VS Code) with all globally registered tools
+        const optionToolNames = new Set(_options.tools?.map(t => t.name) ?? []);
+        const allTools: Array<{ type: string; function: { name: string; description: string; parameters: object } }> = [];
+
+        // Add tools from options
+        for (const t of _options.tools ?? []) {
+            allTools.push({
+                type: 'function',
+                function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.inputSchema || { type: 'object', properties: {} },
+                },
+            });
+        }
+
+        // Add any globally registered tools not already in options
+        for (const t of vscode.lm.tools) {
+            if (!optionToolNames.has(t.name)) {
+                allTools.push({
+                    type: 'function',
+                    function: {
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.inputSchema || { type: 'object', properties: {} },
+                    },
+                });
+            }
+        }
+
+        await this.callChatCompletions(m, chatMessages, progress, token, allTools);
     }
 
     async provideTokenCount(
@@ -133,25 +173,94 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         return Math.ceil(totalLength / 4);
     }
 
-    private extractPrompt(messages: readonly vscode.LanguageModelChatRequestMessage[]): {
+    private extractPrompt(messages: readonly vscode.LanguageModelChatRequestMessage[]): Array<{
         role: string;
-        content: string;
-    }[] {
-        const chatMessages: { role: string; content: string }[] = [];
+        content?: string;
+        tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+        tool_call_id?: string;
+        content_parts?: Array<{ type: string; text?: string }>;
+    }> {
+        const chatMessages: Array<{
+            role: string;
+            content?: string;
+            tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+            tool_call_id?: string;
+            content_parts?: Array<{ type: string; text?: string }>;
+        }> = [];
+
         for (const msg of messages) {
-            let content = '';
+            // VS Code roles: 1=User, 2=Assistant, 3=System
+            let role: string;
+            if (msg.role === vscode.LanguageModelChatMessageRole.User) {
+                role = 'user';
+            } else if (msg.role === vscode.LanguageModelChatMessageRole.Assistant) {
+                role = 'assistant';
+            } else {
+                role = 'system';
+            }
+
+            let textContent = '';
+            const toolCalls: Array<{ id: string; type: string; function: { name: string; arguments: string } }> = [];
+            let toolCallId: string | undefined;
+            let hasToolResult = false;
+
             for (const part of msg.content) {
                 if (part instanceof vscode.LanguageModelTextPart) {
-                    content += part.value;
+                    textContent += part.value;
+                } else if (part instanceof vscode.LanguageModelToolCallPart) {
+                    // VS Code is sending back tool calls from the assistant
+                    // We need to preserve them in the message history
+                    toolCalls.push({
+                        id: part.callId,
+                        type: 'function',
+                        function: {
+                            name: part.name,
+                            arguments: JSON.stringify(part.input),
+                        },
+                    });
                 } else if (part instanceof vscode.LanguageModelToolResultPart) {
-                    // Tool results: serialize as JSON string
-                    content += JSON.stringify(part.content);
+                    // VS Code executed a tool and is sending back the result
+                    hasToolResult = true;
+                    toolCallId = part.callId;
+                    if (typeof part.content === 'string') {
+                        textContent += part.content;
+                    } else if (Array.isArray(part.content)) {
+                        // LanguageModelToolResultContent[]
+                        for (const item of part.content) {
+                            if (item && typeof item === 'object' && 'value' in item) {
+                                textContent += item.value;
+                            } else {
+                                textContent += JSON.stringify(item);
+                            }
+                        }
+                    } else {
+                        textContent += JSON.stringify(part.content);
+                    }
                 }
             }
-            if (msg.role === vscode.LanguageModelChatMessageRole.User) {
-                chatMessages.push({ role: 'user', content });
-            } else if (msg.role === vscode.LanguageModelChatMessageRole.Assistant) {
-                chatMessages.push({ role: 'assistant', content });
+
+            if (hasToolResult && toolCallId) {
+                // Tool result message - must be "tool" role with tool_call_id
+                chatMessages.push({
+                    role: 'tool',
+                    content: textContent || '',
+                    tool_call_id: toolCallId,
+                });
+            } else if (role === 'assistant' && toolCalls.length > 0) {
+                // Assistant message with tool calls - must include tool_calls array
+                // Filter out tool calls with empty names (invalid)
+                const validToolCalls = toolCalls.filter(tc => tc.function.name);
+                chatMessages.push({
+                    role: 'assistant',
+                    content: textContent || '',
+                    tool_calls: validToolCalls.length > 0 ? validToolCalls : undefined,
+                });
+            } else if (role === 'user') {
+                chatMessages.push({ role: 'user', content: textContent });
+            } else if (role === 'assistant') {
+                chatMessages.push({ role: 'assistant', content: textContent });
+            } else if (role === 'system') {
+                chatMessages.push({ role: 'system', content: textContent });
             }
         }
         return chatMessages;
@@ -159,15 +268,25 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
 
     private async callChatCompletions(
         m: ModelEntry,
-        messages: { role: string; content: string }[],
+        messages: Array<{
+            role: string;
+            content?: string;
+            tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+            tool_call_id?: string;
+        }>,
         progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-        token: vscode.CancellationToken
+        token: vscode.CancellationToken,
+        tools?: Array<{ type: string; function: { name: string; description: string; parameters: object } }>
     ): Promise<void> {
-        const body = JSON.stringify({
+        const bodyObj: Record<string, unknown> = {
             model: m.id,
             messages,
             stream: true,
-        });
+        };
+        if (tools && tools.length > 0) {
+            bodyObj.tools = tools;
+        }
+        const body = JSON.stringify(bodyObj);
 
         const endpoint = (m.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '') + '/chat/completions';
         const url = new URL(endpoint);
@@ -206,6 +325,7 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
                         for (const tc of chunk.tool_calls) {
                             let args: Record<string, unknown> = {};
                             try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+                            console.log(`[ModelSelector] Tool call: ${tc.function.name}(${JSON.stringify(args)})`);
                             progress.report(new vscode.LanguageModelToolCallPart(tc.id, tc.function.name, args));
                         }
                     }
@@ -313,55 +433,85 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         }
     }
 
-    private httpStreamRequest(
+    private async httpStreamRequest(
         options: https.RequestOptions,
         body: string,
         token: vscode.CancellationToken,
-        timeoutMs: number = 120000
+        timeoutMs: number = 120000,
+        maxRetries: number = 3
     ): Promise<AsyncIterable<Buffer>> {
-        return new Promise((resolve, reject) => {
-            const transport = options.port === 80 || options.port === '80' ? http : https;
-            const req = transport.request(options, (res) => {
-                if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-                    resolve(res as unknown as AsyncIterable<Buffer>);
-                } else {
-                    let errData = '';
-                    res.on('data', (chunk) => { errData += chunk; });
-                    res.on('end', () => {
-                        reject(new Error(`API request failed (${res.statusCode}): ${errData}`));
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                return await new Promise<AsyncIterable<Buffer>>((resolve, reject) => {
+                    const transport = options.port === 80 || options.port === '80' ? http : https;
+                    const req = transport.request(options, (res) => {
+                        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                            resolve(res as unknown as AsyncIterable<Buffer>);
+                        } else if (res.statusCode === 429) {
+                            let errData = '';
+                            res.on('data', (chunk) => { errData += chunk; });
+                            res.on('end', () => { reject(new Error(`RATE_LIMITED:${errData}`)); });
+                        } else {
+                            let errData = '';
+                            res.on('data', (chunk) => { errData += chunk; });
+                            res.on('end', () => { reject(new Error(`API request failed (${res.statusCode}): ${errData}`)); });
+                        }
                     });
+                    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error(`Request timed out after ${timeoutMs}ms`)); });
+                    req.on('error', reject);
+                    token.onCancellationRequested(() => { req.destroy(); reject(new Error('Request cancelled')); });
+                    req.write(body);
+                    req.end();
+                });
+            } catch (e: unknown) {
+                if (e instanceof Error && e.message.startsWith('RATE_LIMITED:') && attempt < maxRetries) {
+                    const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+                    console.log(`[ModelSelector] Rate limited, retrying in ${delay}ms (${attempt + 1}/${maxRetries})`);
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
                 }
-            });
-
-            req.setTimeout(timeoutMs, () => {
-                req.destroy();
-                reject(new Error(`Request timed out after ${timeoutMs}ms`));
-            });
-
-            req.on('error', reject);
-
-            token.onCancellationRequested(() => {
-                req.destroy();
-                reject(new Error('Request cancelled'));
-            });
-
-            req.write(body);
-            req.end();
-        });
+                throw e;
+            }
+        }
+        throw new Error('Max retries exceeded');
     }
 
     private httpRequest(
         options: https.RequestOptions,
         body: string,
         token: vscode.CancellationToken,
-        timeoutMs: number = 60000
+        timeoutMs: number = 60000,
+        retries: number = 3
+    ): Promise<string> {
+        return this.httpRequestWithRetry(options, body, token, timeoutMs, retries, 0);
+    }
+
+    private httpRequestWithRetry(
+        options: https.RequestOptions,
+        body: string,
+        token: vscode.CancellationToken,
+        timeoutMs: number,
+        maxRetries: number,
+        attempt: number
     ): Promise<string> {
         return new Promise((resolve, reject) => {
             const transport = options.port === 80 || options.port === '80' ? http : https;
             const req = transport.request(options, (res) => {
                 let data = '';
                 res.on('data', (chunk) => { data += chunk; });
-                res.on('end', () => {
+                res.on('end', async () => {
+                    if (res.statusCode === 429 && attempt < maxRetries) {
+                        // Rate limited - retry with exponential backoff
+                        const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+                        console.log(`[ModelSelector] Rate limited (429), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+                        await new Promise(r => setTimeout(r, delay));
+                        try {
+                            resolve(await this.httpRequestWithRetry(options, body, token, timeoutMs, maxRetries, attempt + 1));
+                        } catch (e) {
+                            reject(e);
+                        }
+                        return;
+                    }
                     if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
                         resolve(data);
                     } else {
