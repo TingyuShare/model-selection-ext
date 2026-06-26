@@ -1,0 +1,104 @@
+{
+  "name": "model-selector",
+  "displayName": "AI Model Selector",
+  "description": "Customizable AI Model Selector with chat-completions support",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "model",
+    "chat",
+    "language model"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "modelSelector.config",
+        "title": "ai-model: Config",
+        "icon": "$(settings-gear)"
+      }
+    ],
+    "configuration": {
+      "title": "AI Model Selector",
+      "properties": {
+        "modelSelector.selectedModel": {
+          "type": "string",
+          "default": "deepseek-chat",
+          "description": "Currently selected model ID"
+        },
+        "modelSelector.endpoints": {
+          "type": "array",
+          "default": [
+            {
+              "name": "My API",
+              "vendor": "customendpoint",
+              "apiKey": "",
+              "apiType": "chat-completions",
+              "models": [
+                {
+                  "id": "my-model",
+                  "name": "My Model",
+                  "url": "https://api.openai.com/v1/chat/completions",
+                  "toolCalling": true,
+                  "vision": false,
+                  "maxInputTokens": 128000,
+                  "maxOutputTokens": 16000
+                }
+              ]
+            }
+          ],
+          "description": "List of API endpoints with their models"
+        },
+        "modelSelector.showInStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show current model in status bar"
+        }
+      }
+    },
+    "languageModelChatProviders": [
+      {
+        "vendor": "model-selector",
+        "displayName": "AI Model Selector"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "modelSelector.selectModel",
+          "when": "true"
+        },
+        {
+          "command": "modelSelector.config",
+          "when": "true"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "modelSelector.config",
+          "when": "true",
+          "group": "modelSelector@1"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "^16.18.0",
+    "typescript": "^5.1.0",
+    "@vscode/vsce": "^2.19.0"
+  }
+}
