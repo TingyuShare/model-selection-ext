@@ -7,7 +7,7 @@ export interface ModelEntry {
     name: string;
     vendor: string;
     apiKey: string;
-    url: string;
+    baseUrl: string;
     maxInputTokens: number;
     maxOutputTokens: number;
 }
@@ -18,84 +18,20 @@ const DEFAULT_MODELS: ModelEntry[] = [
         name: "DeepSeek Chat",
         vendor: "deepseek",
         apiKey: "",
-        
-        url: "https://api.deepseek.com/v1/chat/completions",
-        
-        
+        baseUrl: "https://api.deepseek.com/v1",
         maxInputTokens: 128000,
         maxOutputTokens: 16000
-    },
-    {
-        id: "deepseek-reasoner",
-        name: "DeepSeek R1",
-        vendor: "deepseek",
-        apiKey: "",
-        
-        url: "https://api.deepseek.com/v1/chat/completions",
-        
-        
-        maxInputTokens: 128000,
-        maxOutputTokens: 16000
-    },
-    {
-        id: "qwen-plus",
-        name: "Qwen Plus",
-        vendor: "alibaba",
-        apiKey: "",
-        
-        url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        
-        
-        maxInputTokens: 128000,
-        maxOutputTokens: 8192
-    },
-    {
-        id: "qwen-max",
-        name: "Qwen Max",
-        vendor: "alibaba",
-        apiKey: "",
-        
-        url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        
-        
-        maxInputTokens: 32768,
-        maxOutputTokens: 8192
-    },
-    {
-        id: "qwen-vl-max",
-        name: "Qwen VL Max",
-        vendor: "alibaba",
-        apiKey: "",
-        
-        url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        
-        
-        maxInputTokens: 32768,
-        maxOutputTokens: 8192
-    },
-    {
-        id: "llama3",
-        name: "Llama 3 (Local)",
-        vendor: "ollama",
-        apiKey: "ollama",
-        
-        url: "http://localhost:11434/v1/chat/completions",
-        
-        
-        maxInputTokens: 8192,
-        maxOutputTokens: 4096
     }
 ];
 
 export class ModelSelectorProvider {
     private context: vscode.ExtensionContext;
-    private configFilePath: string | undefined;
+    private _cachedConfigFilePath: string | undefined;
     private _onDidChangeConfig = new vscode.EventEmitter<void>();
     readonly onDidChangeConfig = this._onDidChangeConfig.event;
 
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
-        this.configFilePath = this.getConfigFilePath();
     }
 
     private getConfigFilePath(): string | undefined {
@@ -103,42 +39,48 @@ export class ModelSelectorProvider {
         if (workspaceFolders && workspaceFolders.length > 0) {
             return path.join(workspaceFolders[0].uri.fsPath, '.vscode', 'model.json');
         }
+        if (this._cachedConfigFilePath) {
+            return this._cachedConfigFilePath;
+        }
         const storagePath = this.context.globalStorageUri?.fsPath;
         if (storagePath) {
-            return path.join(storagePath, 'model.json');
+            this._cachedConfigFilePath = path.join(storagePath, 'model.json');
+            return this._cachedConfigFilePath;
         }
         return undefined;
     }
 
     getConfigFileUri(): vscode.Uri | undefined {
-        if (!this.configFilePath) return undefined;
-        return vscode.Uri.file(this.configFilePath);
+        const p = this.getConfigFilePath();
+        return p ? vscode.Uri.file(p) : undefined;
     }
 
     ensureConfigFile(): void {
-        if (!this.configFilePath) return;
+        const configPath = this.getConfigFilePath();
+        if (!configPath) return;
 
-        const dir = path.dirname(this.configFilePath);
+        const dir = path.dirname(configPath);
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
 
-        if (!fs.existsSync(this.configFilePath)) {
+        if (!fs.existsSync(configPath)) {
             const defaultContent = JSON.stringify({
                 selectedModel: "deepseek-chat",
                 models: DEFAULT_MODELS
             }, null, 2);
-            fs.writeFileSync(this.configFilePath, defaultContent, 'utf-8');
+            fs.writeFileSync(configPath, defaultContent, 'utf-8');
         }
     }
 
     private readConfigFromFile(): { selectedModel: string; models: ModelEntry[] } {
-        if (!this.configFilePath || !fs.existsSync(this.configFilePath)) {
+        const configPath = this.getConfigFilePath();
+        if (!configPath || !fs.existsSync(configPath)) {
             return { selectedModel: "deepseek-chat", models: DEFAULT_MODELS };
         }
 
         try {
-            const content = fs.readFileSync(this.configFilePath, 'utf-8');
+            const content = fs.readFileSync(configPath, 'utf-8');
             const config = JSON.parse(content);
 
             // Support both old format (endpoints) and new format (models)
@@ -159,7 +101,7 @@ export class ModelSelectorProvider {
                             name: m.name,
                             vendor: ep.vendor,
                             apiKey: ep.apiKey,
-                            url: m.url,
+                            baseUrl: m.url || m.baseUrl,
                             maxInputTokens: m.maxInputTokens,
                             maxOutputTokens: m.maxOutputTokens
                         });
@@ -176,11 +118,12 @@ export class ModelSelectorProvider {
     }
 
     private writeConfigToFile(config: { selectedModel?: string; models?: ModelEntry[] }): void {
-        if (!this.configFilePath) return;
+        const configPath = this.getConfigFilePath();
+        if (!configPath) return;
 
         const current = this.readConfigFromFile();
         const merged = { ...current, ...config };
-        fs.writeFileSync(this.configFilePath, JSON.stringify(merged, null, 2), 'utf-8');
+        fs.writeFileSync(configPath, JSON.stringify(merged, null, 2), 'utf-8');
         this._onDidChangeConfig.fire();
     }
 

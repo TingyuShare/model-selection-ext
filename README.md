@@ -1,24 +1,24 @@
-# AI Model Selector - VS Code 扩展
+# AI Model Selector - VS Code Extension
 
-可自定义的 AI 模型选择器，支持 OpenAI 兼容接口，可在 VS Code Chat 中使用自定义模型。
+A customizable AI model selector that supports OpenAI-compatible APIs, allowing you to use custom models in VS Code Chat.
 
-## 功能特性
+## Features
 
-- 支持 OpenAI 兼容接口（DeepSeek、通义千问、本地模型等）
-- 模型自动出现在 VS Code Chat 模型选择器中
-- 配置文件自动监听变化，保存即生效
+- OpenAI-compatible API support (DeepSeek, Qwen, MiMo, local models, etc.)
+- Models automatically appear in VS Code Chat model picker
+- Config file is watched for changes — just save and it takes effect
 
-## 使用方法
+## Usage
 
-| 命令 | 说明 |
-|------|------|
-| `ai-model: Config` | 打开 `.vscode/model.json` 配置文件 |
+| Command | Description |
+|---------|-------------|
+| `ai-model: Config` | Open `.vscode/model.json` config file |
 
-## 配置方法
+## Configuration
 
-运行 `ai-model: Config` 命令打开配置文件，编辑后保存即可。配置文件位于 `.vscode/model.json`。
+Run the `ai-model: Config` command to open the config file, edit and save. The config file is located at `.vscode/model.json`.
 
-### 配置文件格式
+### Config Format
 
 ```json
 {
@@ -29,10 +29,7 @@
       "name": "DeepSeek Chat",
       "vendor": "deepseek",
       "apiKey": "sk-your-api-key",
-      "apiType": "chat-completions",
-      "url": "https://api.deepseek.com/v1/chat/completions",
-      "toolCalling": true,
-      "vision": false,
+      "baseUrl": "https://api.deepseek.com/v1",
       "maxInputTokens": 128000,
       "maxOutputTokens": 16000
     }
@@ -40,43 +37,39 @@
 }
 ```
 
-### 字段说明
+### Field Reference
 
-| 字段 | 说明 |
-|------|------|
-| `id` | 模型 ID，用于 API 调用 |
-| `name` | 显示名称 |
-| `vendor` | 供应商标识 |
-| `apiKey` | API 密钥 |
-| `apiType` | API 类型，使用 `chat-completions` |
-| `url` | API 端点 URL |
-| `toolCalling` | 是否支持工具调用 |
-| `vision` | 是否支持图像输入 |
-| `maxInputTokens` | 最大输入 token 数 |
-| `maxOutputTokens` | 最大输出 token 数 |
+| Field | Description |
+|-------|-------------|
+| `id` | Model ID used for API calls |
+| `name` | Display name in VS Code Chat |
+| `vendor` | Vendor identifier |
+| `apiKey` | API key for authentication |
+| `baseUrl` | API base URL (e.g. `https://api.deepseek.com/v1`) |
+| `maxInputTokens` | Maximum input token count |
+| `maxOutputTokens` | Maximum output token count |
 
-## 开发
+## Development
 
 ```bash
 npm install
 npm run compile
-# 按 F5 启动调试
+# Press F5 to launch debug
 ```
+
+## Package
 
 ```bash
 npm install -g @vscode/vsce
 vsce package
 ```
 
-## 命令列表
+## Commands
 
-| 命令 | 说明 |
-|------|------|
-| `modelSelector.selectModel` | 选择 AI 模型 |
-| `modelSelector.addModel` | 添加自定义模型 |
-| `modelSelector.removeModel` | 删除模型 |
-| `modelSelector.refreshModels` | 刷新模型列表 |
+| Command | Description |
+|---------|-------------|
+| `modelSelector.config` | Open model configuration file |
 
-## 许可证
+## License
 
 MIT License

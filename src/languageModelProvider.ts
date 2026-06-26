@@ -6,7 +6,15 @@ import { ModelEntry, ModelSelectorProvider } from './modelSelector';
 
 interface OpenAIResponse {
     choices: Array<{
-        message: { content: string };
+        message: {
+            content: string | null;
+            reasoning_content?: string | null;
+            tool_calls?: Array<{
+                id: string;
+                type: 'function';
+                function: { name: string; arguments: string };
+            }> | null;
+        };
     }>;
 }
 
@@ -120,6 +128,9 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
             for (const part of msg.content) {
                 if (part instanceof vscode.LanguageModelTextPart) {
                     content += part.value;
+                } else if (part instanceof vscode.LanguageModelToolResultPart) {
+                    // Tool results: serialize as JSON string
+                    content += JSON.stringify(part.content);
                 }
             }
             if (msg.role === vscode.LanguageModelChatMessageRole.User) {
@@ -143,7 +154,8 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
             stream: false,
         });
 
-        const url = new URL(m.url || 'https://api.openai.com/v1/chat/completions');
+        const endpoint = (m.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '') + '/chat/completions';
+        const url = new URL(endpoint);
         const response = await this.httpRequest({
             hostname: url.hostname,
             port: url.port || (url.protocol === 'https:' ? 443 : 80),
@@ -157,7 +169,22 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
 
         const data = JSON.parse(response) as OpenAIResponse;
         if (data.choices && data.choices.length > 0) {
-            progress.report(new vscode.LanguageModelTextPart(data.choices[0].message.content));
+            const msg = data.choices[0].message;
+
+            // Report tool calls if present
+            if (msg.tool_calls && msg.tool_calls.length > 0) {
+                for (const tc of msg.tool_calls) {
+                    let args: Record<string, unknown> = {};
+                    try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+                    progress.report(new vscode.LanguageModelToolCallPart(tc.id, tc.function.name, args));
+                }
+            }
+
+            // Report text content (prefer content, fall back to reasoning_content)
+            const text = msg.content || msg.reasoning_content || '';
+            if (text) {
+                progress.report(new vscode.LanguageModelTextPart(text));
+            }
         }
     }
 
@@ -191,7 +218,8 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
             messages: chatMessages,
         });
 
-        const url = new URL(m.url || 'https://api.anthropic.com/v1/messages');
+        const endpoint = (m.baseUrl || 'https://api.anthropic.com/v1').replace(/\/+$/, '') + '/messages';
+        const url = new URL(endpoint);
         const response = await this.httpRequest({
             hostname: url.hostname,
             port: url.port || (url.protocol === 'https:' ? 443 : 80),
@@ -232,9 +260,11 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
             },
         });
 
-        const url = new URL(m.url ||
-            `https://generativelanguage.googleapis.com/v1beta/models/${m.id}:generateContent?key=${m.apiKey}`
-        );
+        const endpoint = (m.baseUrl ||
+            `https://generativelanguage.googleapis.com/v1beta/models/${m.id}:generateContent`
+        ).replace(/\/+$/, '');
+        const separator = endpoint.includes('?') ? '&' : '?';
+        const url = new URL(endpoint + `${separator}key=${m.apiKey}`);
         const response = await this.httpRequest({
             hostname: url.hostname,
             port: url.port || (url.protocol === 'https:' ? 443 : 80),

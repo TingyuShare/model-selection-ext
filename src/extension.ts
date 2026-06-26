@@ -20,8 +20,14 @@ export function activate(context: vscode.ExtensionContext) {
     const configUri = modelSelector.getConfigFileUri();
     if (configUri) {
         const watcher = vscode.workspace.createFileSystemWatcher(configUri.fsPath);
-        watcher.onDidChange(() => languageModelProvider.fireChange());
-        watcher.onDidCreate(() => languageModelProvider.fireChange());
+        watcher.onDidChange(() => {
+            languageModelProvider.fireChange();
+            vscode.window.showInformationMessage('Model config reloaded. Select the model in VS Code Chat.');
+        });
+        watcher.onDidCreate(() => {
+            languageModelProvider.fireChange();
+            vscode.window.showInformationMessage('Model config created. Select the model in VS Code Chat.');
+        });
         context.subscriptions.push(watcher);
     }
 
