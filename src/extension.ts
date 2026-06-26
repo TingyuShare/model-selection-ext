@@ -24,6 +24,19 @@ export function activate(context: vscode.ExtensionContext) {
         modelSelector.onDidChangeConfig(() => languageModelProvider.fireChange())
     );
 
+    // Fire initial change so Chat panel queries available models immediately
+    languageModelProvider.fireChange();
+
+    // Guide user to enable the provider in Chat settings
+    vscode.window.showInformationMessage(
+        'AI Model Selector is active. To use it, open Chat, click the model selector, and enable "AI Model Selector" in Manage Models.',
+        'Open Chat'
+    ).then(choice => {
+        if (choice === 'Open Chat') {
+            vscode.commands.executeCommand('workbench.panel.chat.view.copilot.focus');
+        }
+    });
+
     // Watch config file for changes
     const configUri = modelSelector.getConfigFileUri();
     if (configUri) {

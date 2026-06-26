@@ -28,6 +28,11 @@
         "command": "modelSelector.config",
         "title": "ai-model: Config",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "modelSelector.selectModel",
+        "title": "ai-model: Select Model",
+        "icon": "$(list-flat)"
       }
     ],
     "configuration": {
