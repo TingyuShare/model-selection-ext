@@ -27,39 +27,44 @@ export function activate(context: vscode.ExtensionContext) {
     // Fire initial change so Chat panel queries available models immediately
     languageModelProvider.fireChange();
 
-    // Guide user to enable the provider in Chat settings
-    vscode.window.showInformationMessage(
-        'AI Model Selector is active. To use it, open Chat, click the model selector, and enable "AI Model Selector" in Manage Models.',
-        'Open Chat'
-    ).then(choice => {
-        if (choice === 'Open Chat') {
-            vscode.commands.executeCommand('workbench.panel.chat.view.copilot.focus');
-        }
-    });
-
-    // Watch config file for changes
-    const configUri = modelSelector.getConfigFileUri();
-    if (configUri) {
+    // Watch config file for changes (workspace and global storage)
+    const setupWatcher = (uri: vscode.Uri | undefined) => {
+        if (!uri) return;
         const watcher = vscode.workspace.createFileSystemWatcher(
             new vscode.RelativePattern(
-                vscode.Uri.joinPath(configUri, '..'),
-                path.basename(configUri.fsPath)
+                vscode.Uri.joinPath(uri, '..'),
+                path.basename(uri.fsPath)
             )
         );
         const onConfigFileChange = () => {
+            console.log('[ModelSelector] Config file changed, refreshing...');
             modelSelector.invalidateCache();
             languageModelProvider.fireChange();
         };
-        watcher.onDidChange(() => {
-            onConfigFileChange();
-            vscode.window.showInformationMessage('Model config reloaded. Select the model in VS Code Chat.');
-        });
-        watcher.onDidCreate(() => {
-            onConfigFileChange();
-            vscode.window.showInformationMessage('Model config created. Select the model in VS Code Chat.');
-        });
+        watcher.onDidChange(() => onConfigFileChange());
+        watcher.onDidCreate(() => onConfigFileChange());
+        watcher.onDidDelete(() => onConfigFileChange());
         context.subscriptions.push(watcher);
+    };
+
+    // Watch workspace config
+    setupWatcher(modelSelector.getConfigFileUri());
+
+    // Watch global storage config (for no-workspace scenario)
+    const globalConfigPath = modelSelector.getGlobalConfigFilePath();
+    if (globalConfigPath) {
+        setupWatcher(vscode.Uri.file(globalConfigPath));
     }
+
+    // Also listen for VS Code configuration changes (e.g. settings UI edits)
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('modelSelector')) {
+                modelSelector.invalidateCache();
+                languageModelProvider.fireChange();
+            }
+        })
+    );
 
     // Config command
     const configCmd = vscode.commands.registerCommand(

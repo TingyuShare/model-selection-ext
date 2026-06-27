@@ -120,6 +120,9 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         ).length;
         if (toolCallCount >= MAX_TOOL_ROUNDS) {
             console.log(`[ModelSelector] Max tool rounds (${MAX_TOOL_ROUNDS}) reached, stopping tool loop`);
+            progress.report(new vscode.LanguageModelTextPart(
+                '[Max tool call rounds reached. Please try a simpler request.]'
+            ));
             return;
         }
         if (chatMessages.length === 0) {
@@ -309,16 +312,31 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
         let buffer = '';
         // Accumulate streaming tool calls by index (OpenAI sends tool calls in fragments)
         const toolCallAccumulator = new Map<number, { id?: string; name?: string; arguments: string }>();
+        let hasReportedContent = false;
+        let isNonStreamResponse = false;
 
         for await (const sseChunk of responseStream) {
             buffer += decoder.decode(sseChunk, { stream: true });
+
+            // Detect non-streaming JSON response (some providers return full JSON instead of SSE)
+            if (!isNonStreamResponse && buffer.trimStart().startsWith('{')) {
+                isNonStreamResponse = true;
+            }
+
             const lines = buffer.split('\n');
             buffer = lines.pop()!; // keep incomplete line in buffer
 
             for (const line of lines) {
                 const trimmed = line.trim();
-                if (!trimmed || !trimmed.startsWith('data: ')) continue;
-                const data = trimmed.slice(6);
+                if (!trimmed) continue;
+                // Support both "data: json" and "data:json" (non-standard)
+                let data: string | undefined;
+                if (trimmed.startsWith('data: ')) {
+                    data = trimmed.slice(6);
+                } else if (trimmed.startsWith('data:')) {
+                    data = trimmed.slice(5);
+                }
+                if (data === undefined) continue;
                 if (data === '[DONE]') break;
 
                 try {
@@ -342,6 +360,7 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
 
                     const text = chunk.content || chunk.reasoning_content || '';
                     if (text) {
+                        hasReportedContent = true;
                         progress.report(new vscode.LanguageModelTextPart(text));
                     }
                 } catch { /* skip malformed SSE line */ }
@@ -354,7 +373,37 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
             let args: Record<string, unknown> = {};
             try { args = JSON.parse(tc.arguments); } catch { /* ignore */ }
             console.log(`[ModelSelector] Tool call: ${tc.name}(${JSON.stringify(args)})`);
+            hasReportedContent = true;
             progress.report(new vscode.LanguageModelToolCallPart(tc.id, tc.name, args));
+        }
+
+        // Handle non-streaming JSON response (provider returned full JSON instead of SSE)
+        if (isNonStreamResponse && !hasReportedContent && buffer.trim()) {
+            try {
+                const parsed = JSON.parse(buffer) as OpenAIResponse;
+                const message = parsed.choices?.[0]?.message;
+                if (message) {
+                    const text = message.content || message.reasoning_content || '';
+                    if (text) {
+                        hasReportedContent = true;
+                        progress.report(new vscode.LanguageModelTextPart(text));
+                    }
+                    if (message.tool_calls) {
+                        for (const tc of message.tool_calls) {
+                            let args: Record<string, unknown> = {};
+                            try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+                            hasReportedContent = true;
+                            progress.report(new vscode.LanguageModelToolCallPart(tc.id, tc.function.name, args));
+                        }
+                    }
+                }
+            } catch { /* ignore parse error */ }
+        }
+
+        // If nothing was reported (no text, no tool calls), report a placeholder
+        if (!hasReportedContent) {
+            console.warn('[ModelSelector] Stream completed with no content. Reporting empty response.');
+            progress.report(new vscode.LanguageModelTextPart(''));
         }
     }
 

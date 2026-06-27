@@ -61,12 +61,14 @@ export class ModelSelectorProvider {
     private context: vscode.ExtensionContext;
     private _cachedConfigFilePath: string | undefined;
     private _cachedModels: ModelEntry[] | undefined;
-    private _selectedModelKey: string = DEFAULT_MODEL_ID;
+    private _selectedModelKey: string;
     private _onDidChangeConfig = new vscode.EventEmitter<void>();
     readonly onDidChangeConfig = this._onDidChangeConfig.event;
 
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
+        // Restore persisted selected model from globalState
+        this._selectedModelKey = context.globalState.get<string>('modelSelector.selectedModelKey', DEFAULT_MODEL_ID);
     }
 
     dispose(): void {
@@ -96,6 +98,14 @@ export class ModelSelectorProvider {
     getConfigFileUri(): vscode.Uri | undefined {
         const p = this.getConfigFilePath();
         return p ? vscode.Uri.file(p) : undefined;
+    }
+
+    getGlobalConfigFilePath(): string | undefined {
+        const storagePath = this.context.globalStorageUri?.fsPath;
+        if (storagePath) {
+            return path.join(storagePath, 'model.json');
+        }
+        return undefined;
     }
 
     ensureConfigFile(): void {
@@ -179,6 +189,9 @@ export class ModelSelectorProvider {
 
     async saveSelectedModel(modelKey: string): Promise<void> {
         this._selectedModelKey = modelKey;
+        // Persist to globalState so it survives across VS Code windows/restarts
+        await this.context.globalState.update('modelSelector.selectedModelKey', modelKey);
+        this._onDidChangeConfig.fire();
     }
 
     async saveModels(models: ModelEntry[]): Promise<void> {
