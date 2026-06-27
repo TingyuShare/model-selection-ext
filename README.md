@@ -1,33 +1,35 @@
-# AI Model Selector - VS Code Extension
+ # AI Model Selector - VS Code Extension
 
-A customizable AI model selector that supports OpenAI-compatible APIs, allowing you to use custom models in VS Code Chat.
+A VS Code Chat provider for custom OpenAI-compatible models. Define your endpoints and models in a simple JSON config file, then use the extension to surface them in VS Code Chat.
 
 ## Features
 
-- OpenAI-compatible API support (DeepSeek, Qwen, MiMo, local models, etc.)
-- Models automatically appear in VS Code Chat model picker
-- Config file is watched for changes — just save and it takes effect
+- Custom model provider for VS Code Chat
+- Auto-loads models from `.vscode/model.json`
+- Auto-refreshes when the config file is saved
+- Supports OpenAI-compatible endpoints and self-hosted APIs
+- Workspace config with global fallback for no-workspace scenarios
 
-## Usage
+## Quick Start
 
-| Command | Description |
-|---------|-------------|
-| `ai-model: Config` | Open `.vscode/model.json` config file |
+1. Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`)
+2. Run `ai-model: Config`
+3. Edit the generated `.vscode/model.json`
+4. Save the file and open VS Code Chat
 
-## Configuration
+## Config File
 
-Run the `ai-model: Config` command to open the config file, edit and save. The config file is located at `.vscode/model.json`.
+The extension stores model definitions in `.vscode/model.json` for workspace use. If no workspace is open, it falls back to a `model.json` file in the extension's global storage.
 
-### Config Format
+The config file is created automatically on first activation if it does not exist.
+
+### Example config
 
 ```json
 {
-  "selectedModel": "deepseek-chat",
   "models": [
     {
-      "id": "deepseek-chat",
-      "name": "DeepSeek Chat",
-      "vendor": "deepseek",
+      "id": "deepseek-v4-pro",
       "apiKey": "sk-your-api-key",
       "baseUrl": "https://api.deepseek.com/v1",
       "maxInputTokens": 128000,
@@ -41,34 +43,40 @@ Run the `ai-model: Config` command to open the config file, edit and save. The c
 
 | Field | Description |
 |-------|-------------|
-| `id` | Model ID used for API calls |
-| `name` | Display name in VS Code Chat |
-| `vendor` | Vendor identifier |
-| `apiKey` | API key for authentication |
-| `baseUrl` | API base URL (e.g. `https://api.deepseek.com/v1`) |
+| `id` | Model identifier used internally and in the picker |
+| `name` | Display name shown in VS Code Chat |
+| `vendor` | Optional vendor identifier, inferred from `id` if omitted |
+| `apiKey` | API key for the endpoint |
+| `baseUrl` | Base URL for API requests (example: `https://api.deepseek.com/v1`) |
 | `maxInputTokens` | Maximum input token count |
 | `maxOutputTokens` | Maximum output token count |
+| `imageInput` | Optional `boolean` to indicate image input support |
+| `toolCalling` | Optional `boolean` to indicate tool calling support |
+
+### Compatibility
+
+The extension also recognizes legacy `endpoints` config format and converts it to the current `models` format automatically.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `modelSelector.config` | Open the model configuration file |
 
 ## Development
 
 ```bash
 npm install
 npm run compile
-# Press F5 to launch debug
+# then press F5 in VS Code to launch the extension host
 ```
 
-## Package
+## Packaging
 
 ```bash
 npm install -g @vscode/vsce
 vsce package
 ```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `modelSelector.config` | Open model configuration file |
 
 ## License
 
