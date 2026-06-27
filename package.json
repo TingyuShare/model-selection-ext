@@ -2,7 +2,7 @@
   "name": "model-selector",
   "displayName": "AI Model Selector",
   "description": "Customizable AI Model Selector with chat-completions support",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "model-selection",
   "repository": {
     "type": "git",
@@ -28,11 +28,6 @@
         "command": "modelSelector.config",
         "title": "ai-model: Config",
         "icon": "$(settings-gear)"
-      },
-      {
-        "command": "modelSelector.selectModel",
-        "title": "ai-model: Select Model",
-        "icon": "$(list-flat)"
       }
     ],
     "configuration": {
@@ -72,10 +67,6 @@
     ],
     "menus": {
       "commandPalette": [
-        {
-          "command": "modelSelector.selectModel",
-          "when": "true"
-        },
         {
           "command": "modelSelector.config",
           "when": "true"

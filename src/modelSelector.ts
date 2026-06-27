@@ -188,33 +188,4 @@ export class ModelSelectorProvider {
     findModelByKey(key: string): ModelEntry | undefined {
         return this.getModels().find(m => getModelKey(m) === key);
     }
-
-    async selectModel(): Promise<void> {
-        const models = this.getModels();
-        const selectedKey = this.getSelectedModelId();
-
-        if (models.length === 0) {
-            vscode.window.showWarningMessage('No models configured. Run "ai-model: Config" to add models.');
-            return;
-        }
-
-        const items: (vscode.QuickPickItem & { modelKey: string })[] = models.map(m => ({
-            label: getModelName(m),
-            description: `${getModelVendor(m)}${getModelKey(m) === selectedKey ? '  $(check)' : ''}`,
-            detail: m.baseUrl || '',
-            modelKey: getModelKey(m),
-        }));
-
-        const selected = await vscode.window.showQuickPick(items, {
-            placeHolder: 'Select an AI model',
-            title: 'ai-model: Select Model',
-            matchOnDescription: true,
-            matchOnDetail: true,
-        });
-
-        if (selected) {
-            await this.saveSelectedModel(selected.modelKey);
-            vscode.window.showInformationMessage(`Selected model: ${selected.label}`);
-        }
-    }
 }

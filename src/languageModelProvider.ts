@@ -4,6 +4,13 @@ import * as http from 'http';
 import { URL } from 'url';
 import { ModelEntry, ModelSelectorProvider, getModelName, getModelVendor, getModelKey } from './modelSelector';
 
+interface OpenAIToolCallChunk {
+    index: number;
+    id?: string;
+    type?: string;
+    function?: { name?: string; arguments?: string };
+}
+
 interface OpenAIResponse {
     choices: Array<{
         message?: {
@@ -18,11 +25,7 @@ interface OpenAIResponse {
         delta?: {
             content?: string | null;
             reasoning_content?: string | null;
-            tool_calls?: Array<{
-                id: string;
-                type: 'function';
-                function: { name: string; arguments: string };
-            }> | null;
+            tool_calls?: OpenAIToolCallChunk[] | null;
         };
     }>;
 }
@@ -304,6 +307,8 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
 
         const decoder = new TextDecoder();
         let buffer = '';
+        // Accumulate streaming tool calls by index (OpenAI sends tool calls in fragments)
+        const toolCallAccumulator = new Map<number, { id?: string; name?: string; arguments: string }>();
 
         for await (const sseChunk of responseStream) {
             buffer += decoder.decode(sseChunk, { stream: true });
@@ -314,7 +319,7 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
                 const trimmed = line.trim();
                 if (!trimmed || !trimmed.startsWith('data: ')) continue;
                 const data = trimmed.slice(6);
-                if (data === '[DONE]') return;
+                if (data === '[DONE]') break;
 
                 try {
                     const parsed = JSON.parse(data) as OpenAIResponse;
@@ -323,10 +328,15 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
 
                     if (chunk.tool_calls) {
                         for (const tc of chunk.tool_calls) {
-                            let args: Record<string, unknown> = {};
-                            try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
-                            console.log(`[ModelSelector] Tool call: ${tc.function.name}(${JSON.stringify(args)})`);
-                            progress.report(new vscode.LanguageModelToolCallPart(tc.id, tc.function.name, args));
+                            const idx = tc.index ?? 0;
+                            let existing = toolCallAccumulator.get(idx);
+                            if (!existing) {
+                                existing = { arguments: '' };
+                                toolCallAccumulator.set(idx, existing);
+                            }
+                            if (tc.id) { existing.id = tc.id; }
+                            if (tc.function?.name) { existing.name = tc.function.name; }
+                            if (tc.function?.arguments) { existing.arguments += tc.function.arguments; }
                         }
                     }
 
@@ -336,6 +346,15 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
                     }
                 } catch { /* skip malformed SSE line */ }
             }
+        }
+
+        // Now report accumulated tool calls with complete arguments
+        for (const [, tc] of toolCallAccumulator) {
+            if (!tc.id || !tc.name) { continue; }
+            let args: Record<string, unknown> = {};
+            try { args = JSON.parse(tc.arguments); } catch { /* ignore */ }
+            console.log(`[ModelSelector] Tool call: ${tc.name}(${JSON.stringify(args)})`);
+            progress.report(new vscode.LanguageModelToolCallPart(tc.id, tc.name, args));
         }
     }
 

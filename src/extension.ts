@@ -78,13 +78,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
     context.subscriptions.push(configCmd);
-
-    // Select model command
-    const selectCmd = vscode.commands.registerCommand(
-        'modelSelector.selectModel',
-        () => modelSelector.selectModel()
-    );
-    context.subscriptions.push(selectCmd);
 }
 
 export function deactivate() {}
