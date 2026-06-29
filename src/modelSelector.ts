@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 export interface ModelEntry {
@@ -80,16 +81,19 @@ export class ModelSelectorProvider {
     }
 
     private getConfigFilePath(): string | undefined {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (workspaceFolders && workspaceFolders.length > 0) {
-            return path.join(workspaceFolders[0].uri.fsPath, '.vscode', 'model.json');
-        }
         if (this._cachedConfigFilePath) {
             return this._cachedConfigFilePath;
         }
-        const storagePath = this.context.globalStorageUri?.fsPath;
-        if (storagePath) {
-            this._cachedConfigFilePath = path.join(storagePath, 'model.json');
+
+        const roamingDir = process.env.APPDATA;
+        if (roamingDir) {
+            this._cachedConfigFilePath = path.join(roamingDir, 'model-selector', 'model.json');
+            return this._cachedConfigFilePath;
+        }
+
+        const homeDir = os.homedir();
+        if (homeDir) {
+            this._cachedConfigFilePath = path.join(homeDir, 'model-selector', 'model.json');
             return this._cachedConfigFilePath;
         }
         return undefined;
@@ -101,11 +105,7 @@ export class ModelSelectorProvider {
     }
 
     getGlobalConfigFilePath(): string | undefined {
-        const storagePath = this.context.globalStorageUri?.fsPath;
-        if (storagePath) {
-            return path.join(storagePath, 'model.json');
-        }
-        return undefined;
+        return this.getConfigFilePath();
     }
 
     ensureConfigFile(): void {

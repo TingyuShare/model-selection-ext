@@ -47,10 +47,7 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(watcher);
     };
 
-    // Watch workspace config
-    setupWatcher(modelSelector.getConfigFileUri());
-
-    // Watch global storage config (for no-workspace scenario)
+    // Watch the unified global config file
     const globalConfigPath = modelSelector.getGlobalConfigFilePath();
     if (globalConfigPath) {
         setupWatcher(vscode.Uri.file(globalConfigPath));

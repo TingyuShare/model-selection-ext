@@ -2,7 +2,7 @@
   "name": "model-selector",
   "displayName": "AI Model Selector",
   "description": "Customizable AI Model Selector with chat-completions support",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "model-selection",
   "repository": {
     "type": "git",
