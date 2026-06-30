@@ -113,18 +113,6 @@ export class ModelSelectorLanguageModelProvider implements vscode.LanguageModelC
 
         const chatMessages = this.extractPrompt(messages);
 
-        // Prevent infinite tool call loops
-        const MAX_TOOL_ROUNDS = 5;
-        const toolCallCount = messages.filter(m =>
-            m.content.some(p => p instanceof vscode.LanguageModelToolCallPart)
-        ).length;
-        if (toolCallCount >= MAX_TOOL_ROUNDS) {
-            console.log(`[ModelSelector] Max tool rounds (${MAX_TOOL_ROUNDS}) reached, stopping tool loop`);
-            progress.report(new vscode.LanguageModelTextPart(
-                '[Max tool call rounds reached. Please try a simpler request.]'
-            ));
-            return;
-        }
         if (chatMessages.length === 0) {
             chatMessages.push({ role: 'user', content: 'Hello' });
         }
